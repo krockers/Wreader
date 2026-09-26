@@ -155,6 +155,7 @@ Overlay.fill = fill
 --- Paints the fills; returns true when colors were used (ReaderView then enables color refresh).
 function Overlay:paintTo(bb, x, y)
     local plugin = self.plugin
+    self.painted_color = false
     if not plugin:isActive() or self.view.view_mode ~= "page" then return end
     local ok, page = pcall(self.getPage, self)
     if not ok then
@@ -173,6 +174,7 @@ function Overlay:paintTo(bb, x, y)
             if style.rgb then colorful = true end
         end
     end
+    self.painted_color = colorful
     return colorful
 end
 

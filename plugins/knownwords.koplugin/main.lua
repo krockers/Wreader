@@ -136,6 +136,7 @@ function KnownWords:onReaderReady()
     self.store = store
     self.overlay = Overlay:new{ plugin = self }
     self.view:registerViewModule("knownwords", self.overlay)
+    self:patchColorRefresh()
     self:setupTouchZones()
     self:registerDictButtons()
     self:applyBookMode()
@@ -150,6 +151,22 @@ function KnownWords:onCloseDocument()
     if self.store then
         self.store:close()
         self.store = nil
+    end
+end
+
+-- Stock KOReader ignores a view module's colors when it chooses the screen
+-- refresh (this fork counts them, see ReaderView:paintTo). On a stock install,
+-- mark the page as colored after painting, so Kaleido screens refresh in color.
+function KnownWords:patchColorRefresh()
+    local view = self.view
+    if view._knownwords_paint_patched then return end
+    view._knownwords_paint_patched = true
+    local paintTo = view.paintTo
+    view.paintTo = function(this, bb, x, y)
+        paintTo(this, bb, x, y)
+        if self.overlay and self.overlay.painted_color and this.dialog then
+            this.dialog.dithered = true
+        end
     end
 end
 
