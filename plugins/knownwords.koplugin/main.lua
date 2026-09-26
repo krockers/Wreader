@@ -416,9 +416,14 @@ function KnownWords:showWordPanel(word, page_word, on_change)
                     enabled = self.ui.dictionary ~= nil,
                     callback = function()
                         UIManager:close(dialog)
-                        -- Come back to this panel when the dictionary closes.
+                        -- Come back to this panel when the dictionary closes,
+                        -- unless a state was set there (that finishes the word).
                         self.ui.dictionary:onLookupWord(page_word and page_word.raw or word, true,
                             page_word and page_word.boxes, nil, nil, function()
+                                if self.state_set_in_dictionary then
+                                    if on_change then on_change() end
+                                    return
+                                end
                                 self:showWordPanel(word, page_word, on_change)
                             end)
                     end,
@@ -556,14 +561,11 @@ function KnownWords:registerDictButtons()
                 local word = self:getPopupWord(dict_popup)
                 if not word then return end
                 self:setWordState(word, s)
-                local buttons = dict_popup.button_table and dict_popup.button_table.button_by_id
-                if buttons then
-                    for _, other in ipairs(States.ORDER) do
-                        local button = buttons["knownwords_s" .. other]
-                        if button then button:setText(label(other, s), button.width) end
-                    end
-                    UIManager:setDirty(dict_popup, "ui")
-                end
+                -- Done with this word, as with the word panel's state buttons:
+                -- close the popup, and don't reopen the word panel it came from.
+                self.state_set_in_dictionary = true
+                dict_popup:onClose()
+                self.state_set_in_dictionary = nil
             end,
         }
         self.ui.dictionary:addToDictButtons(spec)
