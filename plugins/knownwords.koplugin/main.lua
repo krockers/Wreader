@@ -64,7 +64,8 @@ local DEFAULT_SETTINGS = {
     -- 0.1 (faint) to 1 (full color)
     intensity = 0.5,
     show_new = true,
-    tap_words = true,
+    -- Which taps on a word open the word panel: "all", "colored" or "off".
+    tap_mode = "all",
     lookup_sets_level1 = true,
     auto_known_on_turn = false,
 }
@@ -89,6 +90,10 @@ local KnownWords = WidgetContainer:extend{
 
 function KnownWords:init()
     self.settings = G_reader_settings:readSetting("knownwords", {})
+    if self.settings.tap_words ~= nil then -- earlier on/off setting: keep only "off"
+        if self.settings.tap_words == false then self.settings.tap_mode = "off" end
+        self.settings.tap_words = nil
+    end
     for k, v in pairs(DEFAULT_SETTINGS) do
         if self.settings[k] == nil then
             self.settings[k] = type(v) == "table" and util.tableDeepCopy(v) or v
@@ -349,14 +354,14 @@ function KnownWords:setupTouchZones()
 end
 
 function KnownWords:onTapWord(ges)
-    if not self.settings.tap_words or not self:isActive() or self.view.view_mode ~= "page" then return end
+    local mode = self.settings.tap_mode
+    if mode == "off" or not self:isActive() or self.view.view_mode ~= "page" then return end
     local highlight = self.ui.highlight
     if highlight and (highlight.select_mode or highlight.hold_pos) then return end
     local page_word = self.overlay:wordAt(ges.pos)
     if not page_word then return end
-    local state = self:getState(page_word.word)
-    -- Only colored words open the panel: taps elsewhere still turn pages.
-    if not self:getFillStyles()[state] then return end
+    -- Taps outside words (and, with "colored", on uncolored words) still turn pages.
+    if mode == "colored" and not self:getFillStyles()[self:getState(page_word.word)] then return end
     -- Links keep working (crengine returns "" when there is none).
     local href = self.ui.document:getLinkFromPosition(ges.pos)
     if href and href ~= "" then return end
@@ -1085,13 +1090,42 @@ function KnownWords:genMenu()
                     separator = true,
                 },
                 {
-                    text = _("Tap colored words to open the word panel"),
-                    help_text = _("Taps on uncolored text still turn pages."),
-                    checked_func = function() return self.settings.tap_words end,
-                    callback = function()
-                        self.settings.tap_words = not self.settings.tap_words
-                        self:saveSettings()
+                    text_func = function()
+                        local names = { all = _("all words"), colored = _("colored words"), off = _("off") }
+                        return T(_("Tap opens the word panel: %1"), names[self.settings.tap_mode] or "")
                     end,
+                    help_text = _("Taps that do not open the word panel turn pages as usual. With all words, turn pages by tapping outside the text (margins, between lines), by swiping, or with the page buttons."),
+                    sub_item_table = {
+                        {
+                            text = _("All words"),
+                            radio = true,
+                            checked_func = function() return self.settings.tap_mode == "all" end,
+                            callback = function()
+                                self.settings.tap_mode = "all"
+                                self:saveSettings()
+                            end,
+                        },
+                        {
+                            text = _("Colored words only"),
+                            help_text = _("Taps on known and ignored words turn pages."),
+                            radio = true,
+                            checked_func = function() return self.settings.tap_mode == "colored" end,
+                            callback = function()
+                                self.settings.tap_mode = "colored"
+                                self:saveSettings()
+                            end,
+                        },
+                        {
+                            text = _("Off"),
+                            help_text = _("Set word states from the dictionary popup (long-press) instead."),
+                            radio = true,
+                            checked_func = function() return self.settings.tap_mode == "off" end,
+                            callback = function()
+                                self.settings.tap_mode = "off"
+                                self:saveSettings()
+                            end,
+                        },
+                    },
                 },
                 {
                     text = _("Looking up a new word makes it level 1"),

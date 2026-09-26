@@ -39,7 +39,7 @@ A word is its normalized form. The same word has the same state in every book of
 
 ### Interaction
 
-- **Tap a colored word** to open the word panel. A tap anywhere else, including on a known word, still turns the page. This can be turned off in settings.
+- **Tap a word** (any word, known ones included) to open the word panel. Taps outside words (margins, between lines) still turn pages, as do swipes and page buttons. A setting limits this to colored words, or turns it off.
 - **Meanings per sentence**: a word can mean different things in different sentences (*banco*: bank, bench). Each meaning you add keeps the sentence it was written for. The panel lists all of a word's meanings and marks the one written for the current sentence.
 - **Translate sentence**: translates the current sentence, and the word on its own, with KOReader's translator (Google Translate). It needs Wi-Fi, and KOReader offers to turn it on. The view marks the word in the sentence and, when one of the word's translations occurs in the translated sentence, marks it there too (best effort: `translation.lua`). It also lists the word's translations. The view opens over the panel.
 - **State buttons in the dictionary popup** set the state and close the popup. When the dictionary was opened from the word panel, closing it without choosing a state returns to the panel.
