@@ -416,8 +416,11 @@ function KnownWords:showWordPanel(word, page_word, on_change)
                     enabled = self.ui.dictionary ~= nil,
                     callback = function()
                         UIManager:close(dialog)
+                        -- Come back to this panel when the dictionary closes.
                         self.ui.dictionary:onLookupWord(page_word and page_word.raw or word, true,
-                            page_word and page_word.boxes)
+                            page_word and page_word.boxes, nil, nil, function()
+                                self:showWordPanel(word, page_word, on_change)
+                            end)
                     end,
                 },
                 {
