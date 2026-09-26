@@ -178,6 +178,7 @@ local order = {
         "calibre",
         "exporter",
         "statistics",
+        "known_words",
         "progress_sync",
         "cloudstorage",
         "move_to_archive",

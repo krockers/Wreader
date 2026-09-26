@@ -253,9 +253,11 @@ function ReaderView:paintTo(bb, x, y)
     end
     -- paint top left corner indicator
     self.flipping:paintTo(bb, x, y)
-    -- paint view modules
+    -- paint view modules (a module returns true if it painted in color)
     for _, m in pairs(self.view_modules) do
-        m:paintTo(bb, x, y)
+        if m:paintTo(bb, x, y) == true then
+            colorful = true
+        end
     end
     -- stop activity indicator
     self.ui:handleEvent(Event:new("StopActivityIndicator"))
