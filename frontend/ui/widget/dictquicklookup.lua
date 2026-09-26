@@ -47,6 +47,7 @@ Layout and style:
 - `auto_row_style_width_min_row_size` (int): minimum number of buttons per row to apply auto styling.
 - `auto_row_style_width_ratio` (float): width percentage being given to the button when auto styling is applied.
 - `vsync` (bool): propagated to button entry.
+- `background` (color): button background; a non-gray color makes the popup refresh in color on Kaleido screens.
 
 ### Persistent vs transient behavior
 
@@ -982,6 +983,7 @@ function DictQuickLookup:populatePluginButtons(pool, default_layout, extra_layou
                 vsync = spec.vsync,
                 pairs_with = spec.pairs_with,
                 can_shrink = spec.can_shrink,
+                background = spec.background,
                 callback = spec.callback and function()
                     return spec.callback(self)
                 end,
@@ -996,6 +998,10 @@ function DictQuickLookup:populatePluginButtons(pool, default_layout, extra_layou
             end
 
             pool[spec.id] = button
+            if spec.background and not Blitbuffer.isColor8(spec.background)
+                    and Screen:isColorEnabled() and Device:hasKaleidoWfm() then
+                self.colorful = true
+            end
 
             if spec.conditional then
                 local row_key = spec.row_group
@@ -1417,7 +1423,8 @@ end
 
 function DictQuickLookup:onShow()
     UIManager:setDirty(self, function()
-        return "flashui", self.dict_frame.dimen
+        -- "full" engages the Kaleido color waveform for colored plugin buttons (as ButtonDialog does)
+        return self.colorful and "full" or "flashui", self.dict_frame.dimen
     end)
     return true
 end

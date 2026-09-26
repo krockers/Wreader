@@ -225,6 +225,13 @@ function KnownWords:getStateColor(state, intensity)
     return Blitbuffer.ColorRGB32(lighten(c.r), lighten(c.g), lighten(c.b), 0xFF), c
 end
 
+-- Background of a state's button: its page color (a bit lighter, for
+-- readable labels), or nil for known and ignored, or without color.
+function KnownWords:getButtonColor(state)
+    if not (Screen:isColorEnabled() and States.isColored(state)) then return nil end
+    return (self:getStateColor(state, 0.45))
+end
+
 function KnownWords:getColorStyle(state)
     local rgb, full = self:getStateColor(state)
     return {
@@ -390,7 +397,7 @@ function KnownWords:showWordPanel(word, page_word, on_change)
         if s == state then label = "✓ " .. label end
         state_row[#state_row + 1] = {
             text = label,
-            background = use_color and States.isColored(s) and self:getStateColor(s, 0.45) or nil,
+            background = self:getButtonColor(s),
             callback = function()
                 self:setWordState(word, s, { context = context })
                 done()
@@ -502,8 +509,28 @@ function KnownWords:recordLookup(word)
     end
 end
 
+-- Stock KOReader builds drop a plugin button's background in the dictionary
+-- popup (this fork passes it through itself). Pass it through there too, so
+-- the plugin alone shows colored state buttons on an unmodified install.
+local function patchDictButtonBackgrounds()
+    local DictQuickLookup = require("ui/widget/dictquicklookup")
+    local populate = DictQuickLookup.populatePluginButtons
+    if not populate or DictQuickLookup._knownwords_patched then return end
+    DictQuickLookup._knownwords_patched = true
+    DictQuickLookup.populatePluginButtons = function(dict_popup, pool, default_layout, extra_layout)
+        populate(dict_popup, pool, default_layout, extra_layout)
+        local specs = dict_popup.ui and dict_popup.ui.dictionary and dict_popup.ui.dictionary._dict_buttons
+        for id, spec in pairs(specs or {}) do
+            if spec.background and pool[id] and pool[id].background == nil then
+                pool[id].background = spec.background
+            end
+        end
+    end
+end
+
 function KnownWords:registerDictButtons()
     if not self.ui.dictionary then return end
+    patchDictButtonBackgrounds()
     local function label(s, current)
         return s == current and "✓ " .. States.SHORT[s] or States.SHORT[s]
     end
@@ -519,6 +546,7 @@ function KnownWords:registerDictButtons()
                 local word = self:isActive() and self:getPopupWord(dict_popup)
                 if not word then return false end
                 spec.text = label(s, self:getState(word))
+                spec.background = self:getButtonColor(s)
                 return true
             end,
             callback = function(dict_popup)

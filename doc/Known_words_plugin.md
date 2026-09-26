@@ -142,6 +142,9 @@ Export writes `known_words_<lang>.csv` to the home folder with the columns word,
 
 - `frontend/apps/reader/modules/readerview.lua`: a view module's `paintTo` returning `true` marks the page as colorful, for the Kaleido waveform.
 - `frontend/ui/elements/reader_menu_order.lua`: the plugin's menu entry sits under Tools, after Reading statistics.
+- `frontend/ui/widget/dictquicklookup.lua`: plugin dictionary buttons accept a `background` color, and a popup with colored buttons refreshes with the Kaleido color waveform. The state buttons use the same colors as the page.
+
+The plugin also works when copied alone into an unmodified KOReader. It then passes the button colors through itself, with a small wrapper around `DictQuickLookup.populatePluginButtons`. It cannot switch the waveform there, so on a Kaleido screen the colors may look paler than on this fork.
 
 ## Known limitations
 
