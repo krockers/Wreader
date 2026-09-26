@@ -1,5 +1,5 @@
 describe("Known words plugin", function()
-    local Tokenizer, States, Csv, Store, Overlay, BookScan
+    local Tokenizer, States, Csv, Store, Overlay, BookScan, Translation
 
     setup(function()
         require("commonrequire")
@@ -10,6 +10,7 @@ describe("Known words plugin", function()
         Store = require("store")
         Overlay = require("overlay")
         BookScan = require("bookscan")
+        Translation = require("translation")
     end)
 
     local function collectWords(text)
@@ -76,6 +77,47 @@ describe("Known words plugin", function()
             assert.is_true(States.isColored(States.LEVEL3))
             assert.is_false(States.isColored(States.KNOWN))
             assert.is_false(States.isColored(States.IGNORED))
+        end)
+    end)
+
+    describe("translation view", function()
+        -- shaped like Google Translate results (see frontend/ui/translator.lua)
+        local sentence_result = {
+            { { "He sat on a bench in the park.", "Se sentó en un banco del parque.", nil, nil, 10 } },
+            nil, "es",
+        }
+        local word_result = {
+            { { "bank", "banco", nil, nil, 10 } },
+            nil, "es", nil, nil,
+            { { "banco", nil, { { "bank", 1000, true, false }, { "bench", 0, true, false }, { "the Bank" } } } },
+        }
+
+        it("marks the word in the sentence, ignoring case", function()
+            assert.are.equal("<b><u>Banco</u></b> y otro <b><u>banco</u></b> &amp; más",
+                Translation.markHtml("Banco y otro banco & más",
+                    Translation.findWords("Banco y otro banco & más", { "banco" })))
+        end)
+
+        it("lists the word's translations without duplicates", function()
+            assert.are.same({ "bank", "bench", "the Bank" }, Translation.wordCandidates(word_result))
+            assert.are.same({}, Translation.wordCandidates(nil))
+        end)
+
+        it("finds the translation that is used in the sentence", function()
+            local text = "He sat on a bench in the park."
+            assert.are.same({ { 13, 17 } }, Translation.findCandidate(text, { "bank", "bench" }))
+            assert.are.same({ { 1, 2 } }, Translation.findCandidate("He realized it.", { "to realize", "he" }))
+            assert.are.same({ { 13, 17 } }, Translation.findCandidate(text, { "the bench" }))
+            assert.are.same({}, Translation.findCandidate(text, { "seat" }))
+        end)
+
+        it("builds the view", function()
+            local html = Translation.buildHtml("Se sentó en un banco del parque.", "banco", "banco",
+                sentence_result, word_result)
+            assert.are.equal("<p>Se sentó en un <b><u>banco</u></b> del parque.</p>\n"
+                .. "<p>He sat on a <b><u>bench</u></b> in the park.</p>\n"
+                .. "<p><i>banco</i>: bank, bench, the Bank</p>", html)
+            assert.is_nil(Translation.buildHtml("x", "x", "x", nil, nil))
         end)
     end)
 

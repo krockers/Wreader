@@ -29,7 +29,9 @@ local PathChooser = require("ui/widget/pathchooser")
 local SpinWidget = require("ui/widget/spinwidget")
 local States = require("states")
 local Store = require("store")
+local TextViewer = require("ui/widget/textviewer")
 local Tokenizer = require("tokenizer")
+local Translation = require("translation")
 local UIManager = require("ui/uimanager")
 local Utf8Proc = require("ffi/utf8proc")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
@@ -459,7 +461,7 @@ function KnownWords:showWordPanel(word, page_word, on_change)
                     enabled = context ~= nil and context ~= "",
                     callback = function()
                         -- Shown over the panel, which is still there when it closes.
-                        require("ui/translator"):showTranslation(context, false, self.lang)
+                        self:showSentenceTranslation(word, page_word and page_word.raw or word, context)
                     end,
                 },
             },
@@ -490,6 +492,42 @@ function KnownWords:showWordPanel(word, page_word, on_change)
         },
     }
     UIManager:show(dialog)
+end
+
+--[[--
+Translates the sentence and the word with KOReader's translator (Google
+Translate), and shows the translation with the word marked in the sentence
+and, when it can be found, in the translation.
+--]]
+function KnownWords:showSentenceTranslation(word, raw, context)
+    local NetworkMgr = require("ui/network/manager")
+    if NetworkMgr:willRerunWhenOnline(function() self:showSentenceTranslation(word, raw, context) end) then
+        return
+    end
+    local Translator = require("ui/translator")
+    local Trapper = require("ui/trapper")
+    local lang = self.lang
+    Trapper:wrap(function()
+        local target = Translator:getTargetLanguage()
+        local completed, result = Trapper:dismissableRunInSubprocess(function()
+            return {
+                sentence = Translator:loadPage(context, target, lang),
+                word = Translator:loadPage(raw, target, lang),
+            }
+        end, _("Translating…"))
+        if not completed then return end
+        local html = result and Translation.buildHtml(context, word, raw, result.sentence, result.word)
+        if not html then
+            UIManager:show(InfoMessage:new{ text = _("Translation failed.") })
+            return
+        end
+        UIManager:show(TextViewer:new{
+            title = T(_("Translation: %1"), raw),
+            text = html,
+            text_format = "html",
+            text_type = "lookup",
+        })
+    end)
 end
 
 -- Lists a word's meanings to pick one to edit or delete.

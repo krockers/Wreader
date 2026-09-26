@@ -41,7 +41,7 @@ A word is its normalized form. The same word has the same state in every book of
 
 - **Tap a colored word** to open the word panel. A tap anywhere else, including on a known word, still turns the page. This can be turned off in settings.
 - **Meanings per sentence**: a word can mean different things in different sentences (*banco*: bank, bench). Each meaning you add keeps the sentence it was written for. The panel lists all of a word's meanings and marks the one written for the current sentence.
-- **Translate sentence**: translates the current sentence with KOReader's translator (Google Translate). It needs Wi-Fi, and KOReader offers to turn it on. The translation opens over the panel.
+- **Translate sentence**: translates the current sentence, and the word on its own, with KOReader's translator (Google Translate). It needs Wi-Fi, and KOReader offers to turn it on. The view marks the word in the sentence and, when one of the word's translations occurs in the translated sentence, marks it there too (best effort: `translation.lua`). It also lists the word's translations. The view opens over the panel.
 - **State buttons in the dictionary popup** set the state and close the popup. When the dictionary was opened from the word panel, closing it without choosing a state returns to the panel.
 - **Long-press a word** to look it up as usual. The dictionary popup gets a row of state buttons. A lookup of a new word makes it level 1; this can be turned off in settings.
 - **Mark new words on this page as known**: from the menu, or from any gesture or key via the dispatcher action.
@@ -98,6 +98,7 @@ flowchart LR
 | `tokenizer.lua` | Word splitting and normalization (pure Lua) |
 | `states.lua` | State constants, names and default colors |
 | `csv.lua` | CSV reading and writing (pure Lua) |
+| `translation.lua` | Marks the word in the sentence and in its translation for the translation view (pure Lua) |
 
 ### Page overlay
 
