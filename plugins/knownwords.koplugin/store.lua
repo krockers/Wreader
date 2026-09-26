@@ -1,7 +1,8 @@
 --[[--
 SQLite storage for the Known words plugin.
 
-One database holds every tracked word with its state, meaning and notes, an
+One database holds every tracked word with its state and notes, its meanings
+(each with the sentence it was written for), an
 append-only log of events (lookups and state changes), daily reading counts,
 and the cached word counts of scanned books.
 
@@ -14,14 +15,14 @@ closes it with the book.
 local SQ3 = require("lua-ljsqlite3/init")
 local States = require("states")
 
-local SCHEMA_VERSION = 1
+local SCHEMA_VERSION = 2
 
 local SCHEMA = [[
     CREATE TABLE IF NOT EXISTS word (
         lang        TEXT NOT NULL,
         word        TEXT NOT NULL,
         state       INTEGER NOT NULL DEFAULT 0,
-        meaning     TEXT,
+        meaning     TEXT, -- unused since version 2, see the meaning table
         notes       TEXT,
         context     TEXT,
         book_title  TEXT,
@@ -33,6 +34,16 @@ local SCHEMA = [[
     );
     CREATE INDEX IF NOT EXISTS word_state_index ON word (lang, state);
     CREATE INDEX IF NOT EXISTS word_known_at_index ON word (lang, known_at);
+    CREATE TABLE IF NOT EXISTS meaning (
+        id          INTEGER PRIMARY KEY,
+        lang        TEXT NOT NULL,
+        word        TEXT NOT NULL,
+        meaning     TEXT NOT NULL,
+        context     TEXT,
+        book_title  TEXT,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS meaning_word_index ON meaning (lang, word);
     CREATE TABLE IF NOT EXISTS event (
         id          INTEGER PRIMARY KEY,
         lang        TEXT NOT NULL,
@@ -92,7 +103,13 @@ function Store.open(path, use_wal)
     conn:exec(SCHEMA)
     local version = tonumber(conn:rowexec("PRAGMA user_version;"))
     if version < SCHEMA_VERSION then
-        -- Future migrations go here, keyed on version.
+        if version < 2 then
+            -- A word had one meaning; now each meaning has its own row and sentence.
+            conn:exec([[INSERT INTO meaning (lang, word, meaning, context, book_title, created_at)
+                            SELECT lang, word, meaning, context, book_title, updated_at
+                            FROM word WHERE meaning IS NOT NULL AND meaning <> '';
+                        UPDATE word SET meaning = NULL;]])
+        end
         conn:exec(string.format("PRAGMA user_version=%d;", SCHEMA_VERSION))
     end
     return setmetatable({ conn = conn, path = path }, Store)
@@ -155,21 +172,21 @@ end
 
 --- Returns the stored row for a word, or nil if it has none.
 function Store:getWord(lang, word)
-    local row = self:query([[SELECT word, state, meaning, notes, context, book_title, lookups,
+    local row = self:query([[SELECT word, state, notes, context, book_title, lookups,
                                     created_at, updated_at, known_at
                              FROM word WHERE lang = ? AND word = ?;]], lang, word)[1]
     if not row then return nil end
     return {
         word = row[1],
         state = tonumber(row[2]),
-        meaning = row[3],
-        notes = row[4],
-        context = row[5],
-        book_title = row[6],
-        lookups = tonumber(row[7]),
-        created_at = num(row[8]),
-        updated_at = num(row[9]),
-        known_at = num(row[10]),
+        meanings = self:getMeanings(lang, word),
+        notes = row[3],
+        context = row[4],
+        book_title = row[5],
+        lookups = tonumber(row[6]),
+        created_at = num(row[7]),
+        updated_at = num(row[8]),
+        known_at = num(row[9]),
     }
 end
 
@@ -256,7 +273,7 @@ function Store:logLookup(lang, word, info)
     end)
 end
 
--- Sets a text field (meaning or notes) of a word, creating its row if needed.
+-- Sets a text field of a word, creating its row if needed.
 function Store:_setField(lang, word, field, value)
     if value == "" then value = nil end
     local now = os.time()
@@ -267,8 +284,48 @@ function Store:_setField(lang, word, field, value)
              lang, word, value, now, now)
 end
 
-function Store:setMeaning(lang, word, meaning)
-    self:_setField(lang, word, "meaning", meaning)
+-- Meanings -----------------------------------------------------------------------
+
+--- Returns the meanings of a word, oldest first: array of { id, meaning, context, book_title }.
+function Store:getMeanings(lang, word)
+    local list = {}
+    for _, row in ipairs(self:query([[SELECT id, meaning, context, book_title FROM meaning
+                                      WHERE lang = ? AND word = ? ORDER BY created_at, id;]], lang, word)) do
+        list[#list + 1] = { id = tonumber(row[1]), meaning = row[2], context = row[3], book_title = row[4] }
+    end
+    return list
+end
+
+--[[--
+Adds a meaning of a word, for the sentence it was written for.
+
+The word gets a row (as new) if it has none, so it shows in the word list.
+Does nothing for an empty meaning.
+--]]
+function Store:addMeaning(lang, word, meaning, context, book_title, now)
+    if not meaning or meaning:match("^%s*$") then return end
+    now = now or os.time()
+    self:transaction(function()
+        self:run([[INSERT INTO word (lang, word, state, context, book_title, created_at, updated_at)
+                   VALUES (?, ?, 0, ?, ?, ?, ?)
+                   ON CONFLICT (lang, word) DO UPDATE SET updated_at = excluded.updated_at;]],
+                 lang, word, context, book_title, now, now)
+        self:run([[INSERT INTO meaning (lang, word, meaning, context, book_title, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?);]], lang, word, meaning, context, book_title, now)
+    end)
+end
+
+--- Changes the text of a meaning; an empty text deletes it.
+function Store:updateMeaning(id, meaning)
+    if not meaning or meaning:match("^%s*$") then
+        self:deleteMeaning(id)
+        return
+    end
+    self:run("UPDATE meaning SET meaning = ? WHERE id = ?;", meaning, id)
+end
+
+function Store:deleteMeaning(id)
+    self:run("DELETE FROM meaning WHERE id = ?;", id)
 end
 
 function Store:setNotes(lang, word, notes)
@@ -443,7 +500,7 @@ Lists stored words.
 
 @tparam table opts state (only this state), search (substring), order
 ("word" or "recent", default "word")
-@treturn table array of { word, state, meaning }
+@treturn table array of { word, state, meaning (all meanings joined with "; ") }
 --]]
 function Store:listWords(lang, opts)
     opts = opts or {}
@@ -452,15 +509,17 @@ function Store:listWords(lang, opts)
         where[#where + 1] = "state = ?"
         args[#args + 1] = opts.state
     else
-        -- New words only have a row because of a lookup or a meaning.
-        where[#where + 1] = "(state <> 0 OR meaning IS NOT NULL OR notes IS NOT NULL OR lookups > 0)"
+        -- New words only have a row because of a lookup, a meaning or notes.
+        where[#where + 1] = "(state <> 0 OR notes IS NOT NULL OR lookups > 0 OR EXISTS "
+            .. "(SELECT 1 FROM meaning m WHERE m.lang = word.lang AND m.word = word.word))"
     end
     if opts.search and opts.search ~= "" then
         where[#where + 1] = "word LIKE ? ESCAPE '\\'"
         args[#args + 1] = "%" .. opts.search:gsub("[%%_\\]", "\\%0") .. "%"
     end
     local order = opts.order == "recent" and "updated_at DESC" or "word COLLATE NOCASE"
-    local sql = "SELECT word, state, meaning FROM word WHERE " .. table.concat(where, " AND ")
+    local sql = "SELECT word, state, (SELECT group_concat(m.meaning, '; ') FROM meaning m "
+        .. "WHERE m.lang = word.lang AND m.word = word.word) FROM word WHERE " .. table.concat(where, " AND ")
         .. " ORDER BY " .. order .. ";"
     local list = {}
     for _, row in ipairs(self:query(sql, unpack(args))) do
@@ -469,10 +528,11 @@ function Store:listWords(lang, opts)
     return list
 end
 
---- Deletes every word, event and daily count of a language (book scans are kept).
+--- Deletes every word, meaning, event and daily count of a language (book scans are kept).
 function Store:deleteLanguage(lang)
     self:transaction(function()
         self:run("DELETE FROM word WHERE lang = ?;", lang)
+        self:run("DELETE FROM meaning WHERE lang = ?;", lang)
         self:run("DELETE FROM event WHERE lang = ?;", lang)
         self:run("DELETE FROM daily WHERE lang = ?;", lang)
     end)
@@ -485,7 +545,10 @@ Store.EXPORT_HEADER = { "word", "state", "meaning", "notes", "context", "book", 
 --- Returns all stored words of a language as CSV rows (header first).
 function Store:exportRows(lang)
     local rows = { Store.EXPORT_HEADER }
-    for _, row in ipairs(self:query([[SELECT word, state, meaning, notes, context, book_title, created_at, known_at
+    for _, row in ipairs(self:query([[SELECT word, state,
+                                          (SELECT group_concat(m.meaning, '; ') FROM meaning m
+                                           WHERE m.lang = word.lang AND m.word = word.word),
+                                          notes, context, book_title, created_at, known_at
                                       FROM word WHERE lang = ? ORDER BY word;]], lang)) do
         local created, known = num(row[7]), num(row[8])
         rows[#rows + 1] = {
@@ -503,9 +566,9 @@ end
 Imports words from CSV rows.
 
 The first column is the word, the second its state (a number 0-5 or new,
-known, ignored; missing means known), the third an optional meaning. A header
-row starting with "word" is skipped. Existing meanings are not overwritten by
-empty ones.
+known, ignored; missing means known), the third an optional meaning, added
+unless the word already has that exact meaning. A header row starting with
+"word" is skipped.
 
 @func normalize normalizes a word; rows whose word it rejects are skipped
 @treturn table counts: added, updated, unchanged, skipped
@@ -530,9 +593,14 @@ function Store:importRows(lang, rows, normalize, now)
                 else
                     local existing = self:getWord(lang, word)
                     local meaning = row[3] ~= "" and row[3] or nil
+                    if meaning and existing then
+                        for _, m in ipairs(existing.meanings) do
+                            if m.meaning == meaning then meaning = nil break end
+                        end
+                    end
                     if not existing then
                         result.added = result.added + 1
-                    elseif existing.state == state and (not meaning or meaning == existing.meaning) then
+                    elseif existing.state == state and not meaning then
                         result.unchanged = result.unchanged + 1
                     else
                         result.updated = result.updated + 1
@@ -541,8 +609,9 @@ function Store:importRows(lang, rows, normalize, now)
                         self:_writeState(lang, word, state, { now = now })
                         self:logEvent(lang, word, "import", existing and existing.state or States.NEW, state, nil, now)
                     end
-                    if meaning and (not existing or meaning ~= existing.meaning) then
-                        self:_setField(lang, word, "meaning", meaning)
+                    if meaning then
+                        self:run([[INSERT INTO meaning (lang, word, meaning, created_at)
+                                   VALUES (?, ?, ?, ?);]], lang, word, meaning, now)
                     end
                 end
             end

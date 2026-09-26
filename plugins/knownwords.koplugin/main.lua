@@ -362,33 +362,59 @@ function KnownWords:onTapWord(ges)
     return true
 end
 
+-- Shortens a text to about n characters, on a character boundary.
+local function shorten(text, n)
+    if #text <= n then return text end
+    local cut = n + 1
+    while cut > 1 and text:byte(cut) >= 0x80 and text:byte(cut) < 0xC0 do
+        cut = cut - 1
+    end
+    return text:sub(1, cut - 1) .. "…"
+end
+
 --[[--
-Shows the word panel: state buttons, meaning, notes and context.
+Shows the word panel: state buttons, meanings, notes and the sentence.
+
+Each meaning keeps the sentence it was written for, as a word can mean
+different things in different sentences. The meaning written for the
+current sentence is marked.
 
 @string word normalized word
-@tparam[opt] table page_word the word on the page (for its context and position)
+@tparam[opt] table page_word the word on the page (for its sentence and position)
 @func[opt] on_change called after a change (the vocabulary list refreshes with it)
 --]]
 function KnownWords:showWordPanel(word, page_word, on_change)
     local row = self.store:getWord(self.lang, word)
     local state = row and row.state or States.NEW
-    local context = row and row.context or self:getContext(page_word)
+    local meanings = row and row.meanings or {}
+    -- The sentence being read; from the word list, the first one it was met in.
+    local context = self:getContext(page_word) or (row and row.context)
 
     local lines = { word .. "  ·  " .. States.NAMES[state] }
-    if row and row.meaning then
-        table.insert(lines, T(_("Meaning: %1"), row.meaning))
+    if context and context ~= "" then
+        table.insert(lines, "“" .. context .. "”")
+    end
+    local this_sentence = _("(this sentence)")
+    for _, m in ipairs(meanings) do
+        local line = "• " .. m.meaning
+        if m.context and m.context == context then
+            line = line .. "  " .. this_sentence
+        elseif m.context and #meanings > 1 then
+            line = line .. "  — “" .. shorten(m.context, 50) .. "”"
+        end
+        table.insert(lines, line)
     end
     if row and row.notes then
         table.insert(lines, T(_("Notes: %1"), row.notes))
-    end
-    if context and context ~= "" then
-        table.insert(lines, "“" .. context .. "”")
     end
 
     local dialog
     local function done()
         UIManager:close(dialog)
         if on_change then on_change() end
+    end
+    local function reopen()
+        self:showWordPanel(word, page_word, on_change)
     end
     local use_color = Screen:isColorEnabled()
     local state_row = {}
@@ -424,26 +450,40 @@ function KnownWords:showWordPanel(word, page_word, on_change)
                                     if on_change then on_change() end
                                     return
                                 end
-                                self:showWordPanel(word, page_word, on_change)
+                                reopen()
                             end)
                     end,
                 },
                 {
-                    text = _("Meaning…"),
+                    text = _("Translate sentence"),
+                    enabled = context ~= nil and context ~= "",
+                    callback = function()
+                        -- Shown over the panel, which is still there when it closes.
+                        require("ui/translator"):showTranslation(context, false, self.lang)
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Add meaning…"),
                     callback = function()
                         UIManager:close(dialog)
-                        self:editField(word, "meaning", row and row.meaning, function()
-                            self:showWordPanel(word, page_word, on_change)
-                        end)
+                        self:editMeaning(word, nil, context, reopen)
+                    end,
+                },
+                {
+                    text = _("Edit meanings…"),
+                    enabled = #meanings > 0,
+                    callback = function()
+                        UIManager:close(dialog)
+                        self:chooseMeaning(word, meanings, reopen)
                     end,
                 },
                 {
                     text = _("Notes…"),
                     callback = function()
                         UIManager:close(dialog)
-                        self:editField(word, "notes", row and row.notes, function()
-                            self:showWordPanel(word, page_word, on_change)
-                        end)
+                        self:editNotes(word, row and row.notes, reopen)
                     end,
                 },
             },
@@ -452,12 +492,92 @@ function KnownWords:showWordPanel(word, page_word, on_change)
     UIManager:show(dialog)
 end
 
-function KnownWords:editField(word, field, value, after)
+-- Lists a word's meanings to pick one to edit or delete.
+function KnownWords:chooseMeaning(word, meanings, after)
+    local dialog
+    local buttons = {}
+    for _, m in ipairs(meanings) do
+        local text = m.meaning
+        if m.context then
+            text = text .. "  — “" .. shorten(m.context, 40) .. "”"
+        end
+        buttons[#buttons + 1] = {{
+            text = text,
+            align = "left",
+            callback = function()
+                UIManager:close(dialog)
+                self:editMeaning(word, m, m.context, after)
+            end,
+        }}
+    end
+    dialog = ButtonDialog:new{
+        title = T(_("Meanings of %1"), word),
+        title_align = "left",
+        buttons = buttons,
+        tap_close_callback = after,
+    }
+    UIManager:show(dialog)
+end
+
+--[[--
+Edits a meaning, or adds one when meaning is nil.
+
+@tparam[opt] table meaning { id, meaning } to edit
+@string context the sentence the meaning is for (shown, and saved with a new meaning)
+@func after called when the dialog closes
+--]]
+function KnownWords:editMeaning(word, meaning, context, after)
+    local input
+    local buttons = {
+        {
+            text = _("Cancel"),
+            id = "close",
+            callback = function()
+                UIManager:close(input)
+                after()
+            end,
+        },
+    }
+    if meaning then
+        table.insert(buttons, {
+            text = _("Delete"),
+            callback = function()
+                self.store:deleteMeaning(meaning.id)
+                UIManager:close(input)
+                after()
+            end,
+        })
+    end
+    table.insert(buttons, {
+        text = _("Save"),
+        is_enter_default = true,
+        callback = function()
+            local text = input:getInputText()
+            if meaning then
+                self.store:updateMeaning(meaning.id, text)
+            else
+                self.store:addMeaning(self.lang, word, text, context, self.title)
+            end
+            UIManager:close(input)
+            after()
+        end,
+    })
+    input = InputDialog:new{
+        title = meaning and T(_("Edit meaning of %1"), word) or T(_("Meaning of %1"), word),
+        description = context and context ~= "" and T(_("In: “%1”"), context) or nil,
+        input = meaning and meaning.meaning or "",
+        buttons = { buttons },
+    }
+    UIManager:show(input)
+    input:onShowKeyboard()
+end
+
+function KnownWords:editNotes(word, notes, after)
     local input
     input = InputDialog:new{
-        title = field == "meaning" and T(_("Meaning of %1"), word) or T(_("Notes for %1"), word),
-        input = value or "",
-        allow_newline = field == "notes",
+        title = T(_("Notes for %1"), word),
+        input = notes or "",
+        allow_newline = true,
         buttons = {{
             {
                 text = _("Cancel"),
@@ -469,14 +589,8 @@ function KnownWords:editField(word, field, value, after)
             },
             {
                 text = _("Save"),
-                is_enter_default = true,
                 callback = function()
-                    local text = input:getInputText()
-                    if field == "meaning" then
-                        self.store:setMeaning(self.lang, word, text)
-                    else
-                        self.store:setNotes(self.lang, word, text)
-                    end
+                    self.store:setNotes(self.lang, word, input:getInputText())
                     UIManager:close(input)
                     after()
                 end,

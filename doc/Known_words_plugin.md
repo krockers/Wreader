@@ -12,7 +12,7 @@ In scope:
 
 - Word states: new, learning levels 1–3, known, ignored.
 - Colored fills on the page for new and learning words, one distinct color per state.
-- A word panel on tap: state buttons, your meaning, notes, and the sentence the word was met in.
+- A word panel on tap: state buttons, the sentence being read, your meanings (each tied to the sentence it was written for), notes, and a button that translates the sentence.
 - A state button row in the dictionary popup.
 - "Mark new words on this page as known", and an optional LingQ-style setting that does it on every page turn (off by default).
 - Statistics: known words overall and over time, the current book's known share, and daily reading activity.
@@ -40,6 +40,9 @@ A word is its normalized form. The same word has the same state in every book of
 ### Interaction
 
 - **Tap a colored word** to open the word panel. A tap anywhere else, including on a known word, still turns the page. This can be turned off in settings.
+- **Meanings per sentence**: a word can mean different things in different sentences (*banco*: bank, bench). Each meaning you add keeps the sentence it was written for. The panel lists all of a word's meanings and marks the one written for the current sentence.
+- **Translate sentence**: translates the current sentence with KOReader's translator (Google Translate). It needs Wi-Fi, and KOReader offers to turn it on. The translation opens over the panel.
+- **State buttons in the dictionary popup** set the state and close the popup. When the dictionary was opened from the word panel, closing it without choosing a state returns to the panel.
 - **Long-press a word** to look it up as usual. The dictionary popup gets a row of state buttons. A lookup of a new word makes it level 1; this can be turned off in settings.
 - **Mark new words on this page as known**: from the menu, or from any gesture or key via the dispatcher action.
 - **Turning the page marks its new words as known**: a setting, off by default. It makes counts grow fast, but it also counts words you skimmed.
@@ -126,7 +129,8 @@ One SQLite file: `settings/known_words.sqlite3`.
 
 | Table | Key | Columns | Notes |
 | --- | --- | --- | --- |
-| `word` | (lang, word) | state, meaning, notes, context, book_title, lookups, created_at, updated_at, known_at | A row exists once a word has a state other than new, a lookup, or a meaning |
+| `word` | (lang, word) | state, notes, context, book_title, lookups, created_at, updated_at, known_at | A row exists once a word has a state other than new, a lookup, a meaning or notes. `context` is the first sentence the word was met in. The `meaning` column is unused since version 2 |
+| `meaning` | id | lang, word, meaning, context, book_title, created_at | Any number per word; `context` is the sentence the meaning was written for. Version 2 moved each word's single meaning here |
 | `event` | id | lang, word, kind, from_state, to_state, book_md5, at | Append-only: `state`, `lookup`, `lookup_level1`, `page_known`, `auto_known`, `import` |
 | `daily` | (lang, day) | words_read, pages_read | Local dates |
 | `book` | md5 | title, lang, total_words, unique_words, tokenizer_version, scanned_at | Scan metadata |
@@ -136,7 +140,7 @@ Nothing reads the event log yet. It is kept so that a later knowledge model, or 
 
 ## Import and export
 
-Export writes `known_words_<lang>.csv` to the home folder with the columns word, state, meaning, notes, context, book, created and known. Import reads a CSV whose columns are word, state (0–5, `new`, `known` or `ignored`; empty means known) and an optional meaning. A header row is skipped. Words are normalized as in the reader. Import is how to seed known words, for example from a LingQ export.
+Export writes `known_words_<lang>.csv` to the home folder with the columns word, state, meaning (all meanings, joined with "; "), notes, context, book, created and known. Import reads a CSV whose columns are word, state (0–5, `new`, `known` or `ignored`; empty means known) and an optional meaning, which is added unless the word already has it. A header row is skipped. Words are normalized as in the reader. Import is how to seed known words, for example from a LingQ export.
 
 ## Changes outside the plugin
 
