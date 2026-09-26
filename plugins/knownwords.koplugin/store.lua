@@ -528,6 +528,28 @@ function Store:listWords(lang, opts)
     return list
 end
 
+--- Attaches a grammar database (see grammar.lua), for knownBaseWords(); nil detaches.
+function Store:attachGrammar(path)
+    if self.grammar_attached then
+        self.conn:exec("DETACH DATABASE grammar;")
+        self.grammar_attached = nil
+    end
+    if path then
+        self:run("ATTACH DATABASE ? AS grammar;", path)
+        self.grammar_attached = true
+    end
+end
+
+--[[--
+Counts the known base words: known words that are themselves a base word
+(an infinitive, a singular noun...). Needs an attached grammar database.
+--]]
+function Store:knownBaseWords(lang)
+    if not self.grammar_attached then return nil end
+    return tonumber(self:query([[SELECT COUNT(*) FROM word w WHERE w.lang = ? AND w.state = 4
+                                 AND EXISTS (SELECT 1 FROM grammar.lemma l WHERE l.norm = w.word);]], lang)[1][1])
+end
+
 --- Deletes every word, meaning, event and daily count of a language (book scans are kept).
 function Store:deleteLanguage(lang)
     self:transaction(function()

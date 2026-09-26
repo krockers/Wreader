@@ -18,7 +18,7 @@ In scope:
 - Statistics: known words overall and over time, the current book's known share, and daily reading activity.
 - A word list, and CSV import and export.
 
-Out of scope: audio, listening, spaced repetition review, syncing, shared content, word-form (lemma) grouping.
+Out of scope: audio, listening, spaced repetition review, syncing, shared content.
 
 ## Behavior
 
@@ -42,6 +42,7 @@ A word is its normalized form. The same word has the same state in every book of
 - **Tap a word** (any word, known ones included) to open the word panel. Taps outside words (margins, between lines) still turn pages, as do swipes and page buttons. A setting limits this to colored words, or turns it off.
 - **Meanings per sentence**: a word can mean different things in different sentences (*banco*: bank, bench). Each meaning you add keeps the sentence it was written for. The panel lists all of a word's meanings and marks the one written for the current sentence.
 - **Translate sentence**: translates the current sentence, and the word on its own, with KOReader's translator (Google Translate). It needs Wi-Fi, and KOReader offers to turn it on. The view marks the word in the sentence and, when one of the word's translations occurs in the translated sentence, marks it there too (best effort: `translation.lua`). It also lists the word's translations. The view opens over the panel.
+- **Grammar**: shows what form the word is and of which base word (*hablaron*: *hablar*, 3rd person plural, preterite indicative), gender and the other forms of nouns and adjectives, every reading of an ambiguous word (*vino*: noun "wine" / *venir*), and for verbs a button to the full conjugation table. It needs the grammar data file, see [Grammar data](#grammar-data). It opens over the panel.
 - **State buttons in the dictionary popup** set the state and close the popup. When the dictionary was opened from the word panel, closing it without choosing a state returns to the panel.
 - **Long-press a word** to look it up as usual. The dictionary popup gets a row of state buttons. A lookup of a new word makes it level 1; this can be turned off in settings.
 - **Mark new words on this page as known**: from the menu, or from any gesture or key via the dispatcher action.
@@ -56,7 +57,8 @@ A book is tracked if its language (from its metadata) is in the tracked language
 
 | Figure | Definition |
 | --- | --- |
-| Known words | Words in state known |
+| Known base words | Known words that are themselves a base word (*hablar*, *banco*), not one of their forms. Shown with the grammar data installed |
+| Known forms (Known words without grammar data) | Words in state known |
 | Learning (1 / 2 / 3) | Words at each level |
 | Known, unique words (book) | Known distinct words in the book ÷ distinct words that are not ignored |
 | Known, running text (book) | Occurrences of known words ÷ all word occurrences that are not ignored |
@@ -66,7 +68,7 @@ A book is tracked if its language (from its metadata) is in the tracked language
 | Known total per day | Known words at the end of each day, over the last 30 days |
 | Lookups | Dictionary lookups per day |
 
-"Known words" counts the words you have marked, not an estimate of your vocabulary. Inflected forms count separately, so *hablo*, *hablas* and *habló* are three words, as in LingQ.
+States are per word form: *hablo*, *hablas* and *habló* each have their own state and color, as in LingQ. "Known base words" counts a base word only once its base form itself is marked known, so marking *hablo* known does not count *hablar*. Both figures count the words you have marked, not an estimate of your vocabulary.
 
 ## Architecture
 
@@ -98,6 +100,7 @@ flowchart LR
 | `tokenizer.lua` | Word splitting and normalization (pure Lua) |
 | `states.lua` | State constants, names and default colors |
 | `csv.lua` | CSV reading and writing (pure Lua) |
+| `grammar.lua` | Reads the grammar database; builds the grammar and conjugation views |
 | `translation.lua` | Marks the word in the sentence and in its translation for the translation view (pure Lua) |
 
 ### Page overlay
@@ -138,6 +141,31 @@ One SQLite file: `settings/known_words.sqlite3`.
 | `book_word` | (md5, word) | count | Scan result |
 
 Nothing reads the event log yet. It is kept so that a later knowledge model, or a better "new known words per day" history, can be computed from real data. Book stats are one `GROUP BY` over `book_word` joined with `word`.
+
+## Grammar data
+
+Grammar comes from English Wiktionary's Spanish entries, as extracted by [wiktextract](https://github.com/tatuylonen/wiktextract) and published on [kaikki.org](https://kaikki.org/dictionary/Spanish/). The data is CC BY-SA, and the grammar view shows that attribution.
+
+`tools/knownwords_build_grammar.py` (Python 3, standard library only) turns the kaikki.org JSONL file into `grammar_es.sqlite3`:
+
+```bash
+python3 tools/knownwords_build_grammar.py                 # downloads the data (about 1 GB), then builds
+python3 tools/knownwords_build_grammar.py --input kaikki.org-dictionary-Spanish.jsonl
+python3 tools/knownwords_build_grammar.py --no-pronoun-forms   # smaller: drops forms like dámelo
+```
+
+Copy the result into KOReader's settings folder: `~/.config/koreader/settings/` on Linux, `.adds/koreader/settings/` on a Kobo. The plugin opens `grammar_<book language>.sqlite3` when a book is opened.
+
+| Table | Columns | Notes |
+| --- | --- | --- |
+| `lemma` | id, word, norm, pos, gender, gloss | One row per base word and part of speech |
+| `form` | norm, lemma_id, tagset, in_table, form, note | Every form, keyed by its normalized last word (the pronoun of "me apoltrono" is dropped from the key). `in_table` marks rows of the base word's inflection table. `form` is only stored when it differs from `norm` |
+| `tagset` | id, tags | Distinct wiktextract tag sets, e.g. `indicative plural preterite third-person` |
+| `meta` | key, value | `format` (1), language, source, build date |
+
+Measured on synthetic data at the scale of Spanish Wiktionary (62,000 base words, 1.4 million forms): about 15 s to build, 90 MB (63 MB with `--no-pronoun-forms`), 0.1 ms per lookup on a PC. The real file's size is not known yet.
+
+The plugin attaches the grammar database to its own database to count known base words in one query.
 
 ## Import and export
 

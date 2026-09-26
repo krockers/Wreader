@@ -19,6 +19,7 @@ local Csv = require("csv")
 local DataStorage = require("datastorage")
 local Device = require("device")
 local Dispatcher = require("dispatcher")
+local Grammar = require("grammar")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local KeyValuePage = require("ui/widget/keyvaluepage")
@@ -36,6 +37,7 @@ local UIManager = require("ui/uimanager")
 local Utf8Proc = require("ffi/utf8proc")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ffiUtil = require("ffi/util")
+local lfs = require("libs/libkoreader-lfs")
 local filemanagerutil = require("apps/filemanager/filemanagerutil")
 local logger = require("logger")
 local time = require("ui/time")
@@ -141,6 +143,10 @@ end
 
 function KnownWords:onCloseDocument()
     if self.scan then self.scan:cancel() end
+    if self.grammar then
+        self.grammar:close()
+        self.grammar = nil
+    end
     if self.store then
         self.store:close()
         self.store = nil
@@ -160,6 +166,7 @@ function KnownWords:applyBookMode()
         self.enabled = book_lang ~= nil and self:isTrackedLanguage(book_lang)
     end
     self.lang = book_lang or self.settings.default_lang
+    self:loadGrammar()
     self.states = self.enabled and self.store:loadStates(self.lang) or {}
     self.overlay:invalidate()
     if self.enabled then
@@ -169,6 +176,27 @@ function KnownWords:applyBookMode()
         self.scan = nil
     end
     UIManager:setDirty(self.view.dialog, "ui")
+end
+
+-- Opens the grammar database of the book's language, if installed.
+function KnownWords:loadGrammar()
+    if self.grammar then
+        self.grammar:close()
+        self.grammar = nil
+    end
+    local path = Grammar.path(DataStorage:getSettingsDir(), self.lang)
+    local grammar, err
+    if lfs.attributes(path, "mode") == "file" then
+        grammar, err = Grammar.open(path)
+        if not grammar then
+            logger.warn("KnownWords: cannot open grammar database:", err)
+        end
+    end
+    self.grammar = grammar
+    local ok, attach_err = pcall(self.store.attachGrammar, self.store, grammar and path or nil)
+    if not ok then
+        logger.warn("KnownWords: cannot attach grammar database:", attach_err)
+    end
 end
 
 function KnownWords:getBookLanguage()
@@ -469,6 +497,13 @@ function KnownWords:showWordPanel(word, page_word, on_change)
                         self:showSentenceTranslation(word, page_word and page_word.raw or word, context)
                     end,
                 },
+                {
+                    text = _("Grammar"),
+                    callback = function()
+                        -- Shown over the panel too.
+                        self:showGrammar(word)
+                    end,
+                },
             },
             {
                 {
@@ -533,6 +568,68 @@ function KnownWords:showSentenceTranslation(word, raw, context)
             text_type = "lookup",
         })
     end)
+end
+
+--[[--
+Shows the grammar of a word: its base word(s), what form it is, gender and
+plural or other forms, and for verbs a button to the conjugation table.
+--]]
+function KnownWords:showGrammar(word)
+    if not self.grammar then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Grammar data for '%1' is not installed.\n\nBuild grammar_%1.sqlite3 with tools/knownwords_build_grammar.py (see doc/Known_words_plugin.md) and copy it into:\n%2"),
+                self.lang, DataStorage:getSettingsDir()),
+        })
+        return
+    end
+    local ok, readings = pcall(self.grammar.lookup, self.grammar, word)
+    if not ok then
+        logger.warn("KnownWords: grammar lookup failed:", readings)
+        readings = {}
+    end
+    if #readings == 0 then
+        UIManager:show(InfoMessage:new{ text = T(_("No grammar information for %1."), word) })
+        return
+    end
+    local conjugation_text = _("Conjugation: %1")
+    local buttons, verbs = {}, {}
+    for _, r in ipairs(readings) do
+        if r.pos == "verb" then
+            if not verbs[r.word] and #buttons < 3 then
+                verbs[r.word] = true
+                buttons[#buttons + 1] = {
+                    text = T(conjugation_text, r.word),
+                    callback = function() self:showConjugation(r.word, r.lemma_id) end,
+                }
+            end
+        else
+            -- the other forms of nouns, adjectives, pronouns...
+            local inflections = self.grammar:inflections(r.lemma_id)
+            if #inflections <= 12 then r.inflections = inflections end
+        end
+    end
+    UIManager:show(TextViewer:new{
+        title = T(_("Grammar: %1"), word),
+        text = Grammar.readingsHtml(word, readings),
+        text_format = "html",
+        text_type = "lookup",
+        buttons_table = #buttons > 0 and { buttons } or nil,
+        add_default_buttons = true,
+    })
+end
+
+function KnownWords:showConjugation(word, lemma_id)
+    local html = Grammar.conjugationHtml(word, self.grammar:inflections(lemma_id))
+    if not html then
+        UIManager:show(InfoMessage:new{ text = T(_("No conjugation table for %1."), word) })
+        return
+    end
+    UIManager:show(TextViewer:new{
+        title = T(_("Conjugation: %1"), word),
+        text = html,
+        text_format = "html",
+        text_type = "lookup",
+    })
 end
 
 -- Lists a word's meanings to pick one to edit or delete.
@@ -774,11 +871,17 @@ function KnownWords:onKnownWordsShowStats()
     local counts = self.store:stateCounts(self.lang)
     local kv = {
         { _("Language"), self.lang },
-        { _("Known words"), counts[States.KNOWN] },
-        { _("Learning (levels 1 / 2 / 3)"), T("%1 / %2 / %3", counts[1], counts[2], counts[3]) },
-        { _("Ignored"), counts[States.IGNORED] },
-        "----",
     }
+    local base_known = self.store:knownBaseWords(self.lang)
+    if base_known then
+        table.insert(kv, { _("Known base words"), base_known })
+        table.insert(kv, { _("Known forms"), counts[States.KNOWN] })
+    else
+        table.insert(kv, { _("Known words"), counts[States.KNOWN] })
+    end
+    table.insert(kv, { _("Learning (levels 1 / 2 / 3)"), T("%1 / %2 / %3", counts[1], counts[2], counts[3]) })
+    table.insert(kv, { _("Ignored"), counts[States.IGNORED] })
+    table.insert(kv, "----")
     if not self.enabled then
         table.insert(kv, { _("This book"), _("not tracked") })
     else

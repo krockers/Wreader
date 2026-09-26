@@ -1,5 +1,5 @@
 describe("Known words plugin", function()
-    local Tokenizer, States, Csv, Store, Overlay, BookScan, Translation
+    local Tokenizer, States, Csv, Store, Overlay, BookScan, Translation, Grammar
 
     setup(function()
         require("commonrequire")
@@ -11,7 +11,61 @@ describe("Known words plugin", function()
         Overlay = require("overlay")
         BookScan = require("bookscan")
         Translation = require("translation")
+        Grammar = require("grammar")
     end)
+
+    -- A small grammar database, as tools/knownwords_build_grammar.py writes it.
+    local function makeGrammarDb(path)
+        local SQ3 = require("lua-ljsqlite3/init")
+        os.remove(path)
+        local conn = SQ3.open(path)
+        -- (exec() splits statements on ";", so values contain none)
+        conn:exec([[
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE lemma (id INTEGER PRIMARY KEY, word TEXT NOT NULL, norm TEXT NOT NULL,
+                                pos TEXT NOT NULL, gender TEXT, gloss TEXT);
+            CREATE TABLE tagset (id INTEGER PRIMARY KEY, tags TEXT NOT NULL UNIQUE);
+            CREATE TABLE form (norm TEXT NOT NULL, lemma_id INTEGER NOT NULL, tagset INTEGER NOT NULL,
+                               in_table INTEGER NOT NULL, form TEXT, note TEXT);
+            INSERT INTO tagset VALUES (1, 'infinitive');
+            INSERT INTO tagset VALUES (2, 'gerund');
+            INSERT INTO tagset VALUES (3, 'masculine participle past singular');
+            INSERT INTO tagset VALUES (4, 'first-person indicative present singular');
+            INSERT INTO tagset VALUES (5, 'indicative informal present second-person singular');
+            INSERT INTO tagset VALUES (6, 'indicative informal present second-person singular vos-form');
+            INSERT INTO tagset VALUES (7, 'indicative present singular third-person');
+            INSERT INTO tagset VALUES (8, 'imperative informal second-person singular');
+            INSERT INTO tagset VALUES (9, 'formal imperative second-person-semantically singular third-person');
+            INSERT INTO tagset VALUES (10, 'indicative plural preterite third-person');
+            INSERT INTO tagset VALUES (11, 'first-person imperfect singular subjunctive');
+            INSERT INTO tagset VALUES (12, 'first-person imperfect imperfect-se singular subjunctive');
+            INSERT INTO tagset VALUES (13, 'accusative combined-form infinitive object-first-person object-singular');
+            INSERT INTO tagset VALUES (14, 'plural');
+            INSERT INTO tagset VALUES (15, 'indicative preterite singular third-person');
+            INSERT INTO meta VALUES ('format', '1');
+            INSERT INTO lemma VALUES (1, 'hablar', 'hablar', 'verb', NULL, 'to speak, to talk');
+            INSERT INTO lemma VALUES (2, 'vino', 'vino', 'noun', 'm', 'wine');
+            INSERT INTO lemma VALUES (3, 'venir', 'venir', 'verb', NULL, 'to come');
+            INSERT INTO lemma VALUES (4, 'apoltronarse', 'apoltronarse', 'verb', NULL, 'to get lazy');
+            INSERT INTO form VALUES ('hablar', 1, 1, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablando', 1, 2, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablado', 1, 3, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablo', 1, 4, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablas', 1, 5, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablás', 1, 6, 1, NULL, NULL);
+            INSERT INTO form VALUES ('habla', 1, 7, 1, NULL, NULL);
+            INSERT INTO form VALUES ('habla', 1, 8, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hable', 1, 9, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablaron', 1, 10, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablara', 1, 11, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablase', 1, 12, 1, NULL, NULL);
+            INSERT INTO form VALUES ('hablarme', 1, 13, 1, NULL, NULL);
+            INSERT INTO form VALUES ('vinos', 2, 14, 1, NULL, NULL);
+            INSERT INTO form VALUES ('vino', 3, 15, 1, NULL, NULL);
+            INSERT INTO form VALUES ('apoltrono', 4, 4, 1, 'me apoltrono', NULL);
+        ]])
+        conn:close()
+    end
 
     local function collectWords(text)
         local out = {}
@@ -118,6 +172,107 @@ describe("Known words plugin", function()
                 .. "<p>He sat on a <b><u>bench</u></b> in the park.</p>\n"
                 .. "<p><i>banco</i>: bank, bench, the Bank</p>", html)
             assert.is_nil(Translation.buildHtml("x", "x", "x", nil, nil))
+        end)
+    end)
+
+    describe("grammar", function()
+        local path, grammar
+
+        before_each(function()
+            path = os.tmpname()
+            makeGrammarDb(path)
+            grammar = assert(Grammar.open(path))
+        end)
+
+        after_each(function()
+            grammar:close()
+            os.remove(path)
+        end)
+
+        it("describes forms from their tags", function()
+            local function describe(text)
+                local tags = {}
+                for tag in text:gmatch("%S+") do tags[#tags + 1] = tag end
+                return Grammar.describe(tags)
+            end
+            assert.are.equal("3rd person plural, preterite indicative",
+                describe("indicative plural preterite third-person"))
+            assert.are.equal("2nd person singular (vos), present indicative",
+                describe("indicative informal present second-person singular vos-form"))
+            assert.are.equal("usted, imperative", describe("formal imperative second-person-semantically singular third-person"))
+            assert.are.equal("1st person singular, imperfect (-se) subjunctive",
+                describe("first-person imperfect imperfect-se singular subjunctive"))
+            assert.are.equal("1st person singular, conditional", describe("conditional first-person indicative singular"))
+            assert.are.equal("past participle, masculine singular", describe("masculine participle past singular"))
+            assert.are.equal("feminine plural", describe("feminine plural"))
+            assert.are.equal("infinitive, with attached pronoun (1st person singular)",
+                describe("accusative combined-form infinitive object-first-person object-singular"))
+            assert.are.equal("diminutive", describe("diminutive"))
+        end)
+
+        it("finds every base word of a form", function()
+            local readings = grammar:lookup("vino")
+            assert.are.equal(2, #readings)
+            assert.are.equal("vino", readings[1].word)
+            assert.is_true(readings[1].is_base)
+            assert.are.equal("m", readings[1].gender)
+            assert.are.equal("venir", readings[2].word)
+            assert.are.same({ "indicative", "preterite", "singular", "third-person" }, readings[2].forms[1].tags)
+
+            local habla = grammar:lookup("habla")
+            assert.are.equal(1, #habla)
+            assert.are.equal(2, #habla[1].forms)
+
+            assert.are.equal("apoltronarse", grammar:lookup("apoltrono")[1].word)
+            assert.are.same({}, grammar:lookup("xyz"))
+        end)
+
+        it("builds the grammar view", function()
+            local readings = grammar:lookup("vino")
+            readings[1].inflections = grammar:inflections(readings[1].lemma_id)
+            local html = Grammar.readingsHtml("vino", readings)
+            assert.is_truthy(html:find("<b>vino</b> · noun, masculine<br/>base form<br/>Forms: vinos <i>(plural)</i><br/><i>wine</i>", 1, true))
+            assert.is_truthy(html:find("<b>venir</b> · verb<br/>3rd person singular, preterite indicative", 1, true))
+            assert.is_truthy(html:find("CC BY-SA", 1, true))
+            assert.is_truthy(Grammar.readingsHtml("apoltrono", grammar:lookup("apoltrono")):find("(me apoltrono)", 1, true))
+        end)
+
+        it("builds the conjugation table", function()
+            local html = Grammar.conjugationHtml("hablar", grammar:inflections(1))
+            assert.is_truthy(html:find("gerund: hablando · past participle: hablado", 1, true))
+            assert.is_truthy(html:find("<b>Present</b><br/><i>yo</i> hablo · <i>tú</i> hablas · <i>vos</i> hablás · "
+                .. "<i>él/ella/usted</i> habla</p>", 1, true))
+            assert.is_truthy(html:find("<b>Imperfect (-ra)</b><br/><i>yo</i> hablara", 1, true))
+            assert.is_truthy(html:find("<b>Imperfect (-se)</b><br/><i>yo</i> hablase", 1, true))
+            -- the formal "usted" imperative repeats the 3rd person, and attached pronouns are left out
+            assert.is_falsy(html:find("hable", 1, true))
+            assert.is_falsy(html:find("hablarme", 1, true))
+            assert.is_nil(Grammar.conjugationHtml("vino", grammar:inflections(2)))
+        end)
+
+        it("rejects a file that is not a grammar database", function()
+            local other = os.tmpname()
+            local store = Store.open(other, false)
+            store:close()
+            local g, err = Grammar.open(other)
+            assert.is_nil(g)
+            assert.is_truthy(err)
+            os.remove(other)
+        end)
+
+        it("counts known base words through the store", function()
+            local store_path = os.tmpname()
+            os.remove(store_path)
+            local store = Store.open(store_path, false)
+            assert.is_nil(store:knownBaseWords("es"))
+            store:attachGrammar(path)
+            store:setStates("es", { "hablar", "hablo", "vino", "xyz" }, States.KNOWN)
+            -- hablar and vino are base words; hablo is a form, xyz unknown
+            assert.are.equal(2, store:knownBaseWords("es"))
+            store:attachGrammar(nil)
+            assert.is_nil(store:knownBaseWords("es"))
+            store:close()
+            os.remove(store_path)
         end)
     end)
 
